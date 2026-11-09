@@ -42,7 +42,6 @@ import {
   DEFAULT_FLASHCARDS,
   DEFAULT_QNA_THREADS,
   DEFAULT_GROUP_ROOMS,
-  DEFAULT_SAVED_ACCOUNTS,
   DEFAULT_SOCIAL_POSTS,
   DEFAULT_DIRECT_MESSAGES,
 } from './data/seedData';
@@ -72,7 +71,21 @@ import {
   GeminiModal,
   NotificationsModal,
   SupportModal,
+  type PendingAuthAction,
 } from './components/GlobalModals';
+import {
+  getUser,
+  handleAuthCallback,
+  onAuthChange,
+  logout,
+  updateUser,
+} from '@netlify/identity';
+import {
+  identityUserToAccount,
+  authErrorMessage,
+  LEGACY_ACCOUNT_KEYS,
+  LEGACY_DEMO_ACCOUNT_IDS,
+} from './utils/auth';
 
 function loadState<T>(key: string, fallback: T): T {
   try {
@@ -127,17 +140,19 @@ export default function App() {
   );
 
   // Accounts & Social States
-  const [savedAccounts, setSavedAccounts] = useState<UserAccount[]>(() =>
-    loadState('edunexus_accounts_v2', DEFAULT_SAVED_ACCOUNTS)
-  );
-  const [currentUser, setCurrentUser] = useState<UserAccount | null>(() =>
-    loadState('edunexus_current_user_v2', DEFAULT_SAVED_ACCOUNTS[0])
-  );
+  // Real session from Netlify Identity (no more demo accounts)
+  const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
+  const [authReady, setAuthReady] = useState<boolean>(false);
+  const [pendingAuthAction, setPendingAuthAction] = useState<PendingAuthAction>(null);
   const [socialPosts, setSocialPosts] = useState<SocialPost[]>(() =>
-    loadState('edunexus_social_posts_v2', DEFAULT_SOCIAL_POSTS)
+    loadState<SocialPost[]>('edunexus_social_posts_v2', DEFAULT_SOCIAL_POSTS).filter(
+      (p) => !LEGACY_DEMO_ACCOUNT_IDS.includes(p.author_id)
+    )
   );
   const [directMessages, setDirectMessages] = useState<DirectMessage[]>(() =>
-    loadState('edunexus_dms_v2', DEFAULT_DIRECT_MESSAGES)
+    loadState<DirectMessage[]>('edunexus_dms_v2', DEFAULT_DIRECT_MESSAGES).filter(
+      (m) => !LEGACY_DEMO_ACCOUNT_IDS.includes(m.sender_id)
+    )
   );
 
   // Wallet & Loyalty Points
@@ -256,12 +271,44 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('edunexus_rooms_v2', JSON.stringify(groupRooms));
   }, [groupRooms]);
+  // Auth: remove legacy fake accounts, process email/OAuth callbacks, restore session
   useEffect(() => {
-    localStorage.setItem('edunexus_accounts_v2', JSON.stringify(savedAccounts));
-  }, [savedAccounts]);
-  useEffect(() => {
-    localStorage.setItem('edunexus_current_user_v2', JSON.stringify(currentUser));
-  }, [currentUser]);
+    LEGACY_ACCOUNT_KEYS.forEach((k) => localStorage.removeItem(k));
+    let cancelled = false;
+    const unsubscribe = onAuthChange((_event, user) => {
+      if (!cancelled) setCurrentUser(user ? identityUserToAccount(user) : null);
+    });
+    (async () => {
+      try {
+        const result = await handleAuthCallback();
+        if (result?.type === 'invite' && result.token) {
+          setPendingAuthAction({ type: 'invite', token: result.token });
+          setAuthModalOpen(true);
+        } else if (result?.type === 'recovery') {
+          setPendingAuthAction({ type: 'recovery' });
+          setAuthModalOpen(true);
+        } else if (result?.type === 'confirmation') {
+          showToast('¡Correo confirmado! Tu cuenta ya está activa.', 'success');
+        } else if (result?.type === 'oauth' && result.user) {
+          showToast(`Sesión iniciada como ${result.user.name || result.user.email}`, 'success');
+        } else if (result?.type === 'email_change') {
+          showToast('Tu correo fue actualizado', 'success');
+        }
+      } catch (err) {
+        showToast(authErrorMessage(err), 'warning');
+      }
+      const user = await getUser();
+      if (!cancelled) {
+        setCurrentUser(user ? identityUserToAccount(user) : null);
+        setAuthReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => {
     localStorage.setItem('edunexus_social_posts_v2', JSON.stringify(socialPosts));
   }, [socialPosts]);
@@ -440,7 +487,7 @@ export default function App() {
             >
               <UserCheck className="w-3.5 h-3.5" />
               <span className="truncate max-w-[140px]">
-                {currentUser ? currentUser.name : 'Acceder con Google'}
+                {!authReady ? 'Cargando…' : currentUser ? currentUser.name : 'Iniciar sesión'}
               </span>
             </button>
           </div>
@@ -947,11 +994,6 @@ export default function App() {
         {activeView === 'realtime-social' && (
           <RealtimeSocialView
             currentUser={currentUser}
-            savedAccounts={savedAccounts}
-            onSwitchAccount={(acc) => {
-              setCurrentUser(acc);
-              showToast(`Sesión cambiada a ${acc.name} (${acc.role})`, 'success');
-            }}
             onOpenAuthModal={() => setAuthModalOpen(true)}
             socialPosts={socialPosts}
             setSocialPosts={setSocialPosts}
@@ -1006,15 +1048,15 @@ export default function App() {
         isOpen={authModalOpen}
         onClose={() => setAuthModalOpen(false)}
         currentUser={currentUser}
-        savedAccounts={savedAccounts}
-        setSavedAccounts={setSavedAccounts}
-        onSelectAccount={(acc) => {
-          setCurrentUser(acc);
-          showToast(`Cuenta activa: ${acc.name}`, 'success');
-        }}
-        onLogout={() => {
-          setCurrentUser(null);
-          showToast('Sesión cerrada', 'info');
+        pendingAction={pendingAuthAction}
+        onPendingActionDone={() => setPendingAuthAction(null)}
+        onLogout={async () => {
+          try {
+            await logout();
+          } finally {
+            setCurrentUser(null);
+            showToast('Sesión cerrada', 'info');
+          }
         }}
         showToast={showToast}
       />
@@ -1023,19 +1065,19 @@ export default function App() {
         isOpen={verifyModalOpen}
         onClose={() => setVerifyModalOpen(false)}
         onVerifiedSuccess={(docName, suneduCode) => {
-          if (currentUser) {
-            const updated: UserAccount = {
-              ...currentUser,
-              role: 'Asesor Verificado',
-              isVerifiedTutor: true,
-              verifiedDocName: docName,
-              credentialCode: suneduCode,
-            };
-            setCurrentUser(updated);
-            setSavedAccounts((prev) =>
-              prev.map((a) => (a.id === updated.id ? updated : a))
-            );
+          if (!currentUser) {
+            setVerifyModalOpen(false);
+            setAuthModalOpen(true);
+            showToast('Inicia sesión para verificar tu credencial', 'warning');
+            return;
           }
+          updateUser({
+            data: {
+              is_verified_tutor: true,
+              verified_doc_name: docName,
+              credential_code: suneduCode,
+            },
+          }).catch((err) => showToast(authErrorMessage(err), 'warning'));
           setVerifyModalOpen(false);
           setActiveView('tutor-portal');
           showToast('¡Credencial SUNEDU verificada! Bienvenido al Portal del Asesor', 'success');
@@ -1107,7 +1149,7 @@ export default function App() {
         onClose={() => setCertModalData((prev) => ({ ...prev, open: false }))}
         courseTitle={certModalData.title}
         instructorName={certModalData.instructor}
-        defaultStudentName={currentUser?.name || 'Camila Mendoza'}
+        defaultStudentName={currentUser?.name || 'Estudiante EduNexus'}
         showToast={showToast}
       />
     </div>

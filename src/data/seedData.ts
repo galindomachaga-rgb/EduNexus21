@@ -740,89 +740,10 @@ export const DEFAULT_GROUP_ROOMS: GroupStudyRoom[] = [
   },
 ];
 
-export const DEFAULT_SAVED_ACCOUNTS: UserAccount[] = [
-  {
-    id: 'usr_camila_mendoza_uni_edu_pe',
-    name: 'Camila Mendoza',
-    email: 'camila.mendoza@uni.edu.pe',
-    uni: 'UNI · Ingeniería de Sistemas',
-    role: 'Estudiante',
-    isVerifiedTutor: false,
-    verifiedDocName: '',
-    credentialCode: '',
-    bonusPoints: 50,
-  },
-  {
-    id: 'usr_mateo_salazar_prof_gmail_com',
-    name: 'Ing. Mateo Salazar',
-    email: 'mateo.salazar.prof@gmail.com',
-    uni: 'PUCP · Magíster en Ingeniería',
-    role: 'Asesor Verificado',
-    isVerifiedTutor: true,
-    verifiedDocName: 'titulo_sunedu_ing_mateo_salazar.pdf',
-    credentialCode: 'SUNEDU-ING-94821',
-    bonusPoints: 50,
-  },
-];
+// Las publicaciones y mensajes ahora provienen únicamente de usuarios reales con sesión iniciada.
+export const DEFAULT_SOCIAL_POSTS: SocialPost[] = [];
 
-export const DEFAULT_SOCIAL_POSTS: SocialPost[] = [
-  {
-    id: 'post-101',
-    author_id: 'usr_mateo_salazar_prof_gmail_com',
-    author_name: 'Ing. Mateo Salazar',
-    author_email: 'mateo.salazar.prof@gmail.com',
-    author_role: 'Asesor Verificado',
-    category: 'Apunte / Recurso Compartido',
-    content:
-      'Acabo de publicar una guía práctica sobre Ecuaciones Diferenciales y Transformada de Laplace. Pueden dejar sus comentarios o enviarme un mensaje directo para coordinar repasos en el Aula Virtual.',
-    created_at: 'Hace 10 min',
-    likes_user_ids: ['usr_camila_mendoza_uni_edu_pe'],
-    comments: [
-      {
-        id: 'cm-1',
-        author_id: 'usr_camila_mendoza_uni_edu_pe',
-        author_name: 'Camila Mendoza',
-        author_role: 'Estudiante',
-        text: '¡Muchas gracias Ing. Mateo! Ya descargué la guía desde mi cuenta.',
-        time: 'Hace 4 min',
-      },
-    ],
-  },
-  {
-    id: 'post-102',
-    author_id: 'usr_camila_mendoza_uni_edu_pe',
-    author_name: 'Camila Mendoza',
-    author_email: 'camila.mendoza@uni.edu.pe',
-    author_role: 'Estudiante',
-    category: 'Consulta Académica',
-    content:
-      '¿Alguien más está preparando el examen parcial de Cálculo II o Programación en Python para armar una sesión grupal hoy a las 7:00 PM?',
-    created_at: 'Hace 3 min',
-    likes_user_ids: ['usr_mateo_salazar_prof_gmail_com'],
-    comments: [],
-  },
-];
-
-export const DEFAULT_DIRECT_MESSAGES: DirectMessage[] = [
-  {
-    id: 'dm-1',
-    sender_id: 'usr_mateo_salazar_prof_gmail_com',
-    sender_name: 'Ing. Mateo Salazar',
-    sender_email: 'mateo.salazar.prof@gmail.com',
-    recipient_email: 'camila.mendoza@uni.edu.pe',
-    message: 'Hola Camila, vi tu publicación en el muro. Cuando gustes revisamos los ejercicios en el Aula Virtual.',
-    time: '11:45 AM',
-  },
-  {
-    id: 'dm-2',
-    sender_id: 'usr_camila_mendoza_uni_edu_pe',
-    sender_name: 'Camila Mendoza',
-    sender_email: 'camila.mendoza@uni.edu.pe',
-    recipient_email: 'mateo.salazar.prof@gmail.com',
-    message: '¡Excelente profesor! Ahora mismo me conecto desde mi cuenta.',
-    time: '11:47 AM',
-  },
-];
+export const DEFAULT_DIRECT_MESSAGES: DirectMessage[] = [];
 
 export const DOMAIN_SAMPLE_QUESTIONS: Record<string, string[]> = {
   'Matemáticas y Ciencias': [
