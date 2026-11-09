@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   X,
   ShieldCheck,
@@ -15,7 +15,24 @@ import {
   Copy,
   Globe,
   Code2,
+  Eye,
+  EyeOff,
+  Loader2,
+  Mail,
+  LogOut,
+  AlertCircle,
 } from 'lucide-react';
+import {
+  login,
+  signup,
+  oauthLogin,
+  getSettings,
+  requestPasswordRecovery,
+  updateUser,
+  acceptInvite,
+  type Settings,
+} from '@netlify/identity';
+import { authErrorMessage } from '../utils/auth';
 import {
   TutorProfile,
   CourseItem,
@@ -36,270 +53,539 @@ import { consultAcademicAdvisor } from '../utils/aiClient';
 import { FormattedMessage } from './FormattedMessage';
 
 /* ============================================================================
- * 1. GOOGLE AUTH & MULTI-ACCOUNT MODAL
+ * 1. AUTH MODAL (Netlify Identity: login, registro, Google, recuperación)
  * ========================================================================== */
+
+export type PendingAuthAction =
+  | { type: 'recovery' }
+  | { type: 'invite'; token: string }
+  | null;
+
+type AuthTab = 'login' | 'register' | 'forgot' | 'reset' | 'invite' | 'profile' | 'check-email';
 
 interface GoogleAuthModalProps {
   isOpen: boolean;
   onClose: () => void;
   currentUser: UserAccount | null;
-  savedAccounts: UserAccount[];
-  setSavedAccounts: React.Dispatch<React.SetStateAction<UserAccount[]>>;
-  onSelectAccount: (acc: UserAccount) => void;
-  onLogout: () => void;
+  pendingAction: PendingAuthAction;
+  onPendingActionDone: () => void;
+  onLogout: () => Promise<void> | void;
   showToast: (msg: string, type?: 'success' | 'info' | 'warning') => void;
 }
+
+const inputCls =
+  'w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2.5 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500 transition';
+const labelCls = 'block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1';
+
+const GoogleIcon = () => (
+  <svg className="w-4 h-4" viewBox="0 0 48 48" aria-hidden="true">
+    <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" />
+    <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z" />
+    <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z" />
+    <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z" />
+  </svg>
+);
+
+const PasswordInput: React.FC<{
+  value: string;
+  onChange: (v: string) => void;
+  autoComplete: string;
+  placeholder?: string;
+}> = ({ value, onChange, autoComplete, placeholder }) => {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="relative">
+      <input
+        type={show ? 'text' : 'password'}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        autoComplete={autoComplete}
+        placeholder={placeholder || '••••••••'}
+        required
+        minLength={8}
+        className={`${inputCls} pr-10`}
+      />
+      <button
+        type="button"
+        onClick={() => setShow((s) => !s)}
+        aria-label={show ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+      >
+        {show ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+      </button>
+    </div>
+  );
+};
 
 export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
   isOpen,
   onClose,
   currentUser,
-  savedAccounts,
-  setSavedAccounts,
-  onSelectAccount,
+  pendingAction,
+  onPendingActionDone,
   onLogout,
   showToast,
 }) => {
-  const [tab, setTab] = useState<'accounts' | 'register' | 'profile'>('accounts');
-  const [regName, setRegName] = useState<string>('');
-  const [regEmail, setRegEmail] = useState<string>('');
-  const [regMajor, setRegMajor] = useState<string>('Ingeniería de Sistemas · PUCP');
-  const [regRole, setRegRole] = useState<'Estudiante' | 'Asesor Verificado'>('Estudiante');
-  const [regDocCode, setRegDocCode] = useState<string>('');
-  const [regDocFile, setRegDocFile] = useState<string>('');
+  const [tab, setTab] = useState<AuthTab>('login');
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [password2, setPassword2] = useState('');
+  const [name, setName] = useState('');
+  const [uni, setUni] = useState('');
+  const [checkEmailMsg, setCheckEmailMsg] = useState('');
+
+  // Load Identity settings once (which providers are enabled, signup allowed, etc.)
+  useEffect(() => {
+    if (!isOpen || settings) return;
+    getSettings()
+      .then(setSettings)
+      .catch(() => setSettings({ autoconfirm: false, disableSignup: false, providers: {} as Settings['providers'] }));
+  }, [isOpen, settings]);
+
+  // Choose the right screen whenever the modal opens or the session changes
+  useEffect(() => {
+    if (!isOpen) return;
+    setError('');
+    if (pendingAction?.type === 'recovery') setTab('reset');
+    else if (pendingAction?.type === 'invite') setTab('invite');
+    else if (currentUser) {
+      setTab('profile');
+      setUni(currentUser.uni === 'Perfil académico sin completar' ? '' : currentUser.uni);
+      setName(currentUser.name);
+    } else if (tab === 'profile' || tab === 'reset' || tab === 'invite') setTab('login');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, pendingAction, currentUser?.id]);
 
   if (!isOpen) return null;
 
-  const handleCreateAccount = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!regName.trim() || !regEmail.trim()) {
-      showToast('Completa tu nombre y correo institucional', 'warning');
-      return;
-    }
-    if (regRole === 'Asesor Verificado' && !regDocCode.trim() && !regDocFile) {
-      showToast('Para registrarte como Asesor debes adjuntar o ingresar tu código SUNEDU', 'warning');
-      return;
-    }
-    const newAcc: UserAccount = {
-      id: 'usr_' + Date.now(),
-      name: regName.trim(),
-      email: regEmail.trim(),
-      role: regRole,
-      uni: regMajor.trim(),
-      isVerifiedTutor: regRole === 'Asesor Verificado',
-      verifiedDocName: regDocFile || (regDocCode ? `SUNEDU-${regDocCode}.pdf` : ''),
-      credentialCode: regDocCode || (regRole === 'Asesor Verificado' ? 'SUNEDU-2026-VERIFIED' : ''),
-      bonusPoints: 50,
-    };
-    setSavedAccounts((prev) => [newAcc, ...prev]);
-    onSelectAccount(newAcc);
-    onClose();
-    showToast(`Bienvenido(a), ${newAcc.name}`, 'success');
+  const switchTab = (t: AuthTab) => {
+    setError('');
+    setPassword('');
+    setPassword2('');
+    setTab(t);
   };
 
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setError('');
+    try {
+      await fn();
+    } catch (err) {
+      setError(authErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    run(async () => {
+      const u = await login(email.trim(), password);
+      setPassword('');
+      onClose();
+      showToast(`¡Hola de nuevo, ${u.name || u.email}!`, 'success');
+    });
+  };
+
+  const handleRegister = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password !== password2) {
+      setError('Las contraseñas no coinciden.');
+      return;
+    }
+    run(async () => {
+      const u = await signup(email.trim(), password, {
+        full_name: name.trim(),
+        uni: uni.trim(),
+      });
+      setPassword('');
+      setPassword2('');
+      if (u.confirmedAt || settings?.autoconfirm) {
+        onClose();
+        showToast(`Bienvenido(a) a EduNexus, ${name.trim() || u.email}`, 'success');
+      } else {
+        setCheckEmailMsg(
+          `Enviamos un enlace de confirmación a ${email.trim()}. Ábrelo para activar tu cuenta e iniciar sesión.`
+        );
+        setTab('check-email');
+      }
+    });
+  };
+
+  const handleForgot = (e: React.FormEvent) => {
+    e.preventDefault();
+    run(async () => {
+      await requestPasswordRecovery(email.trim());
+      setCheckEmailMsg(
+        `Si existe una cuenta con ${email.trim()}, recibirás un enlace para restablecer tu contraseña.`
+      );
+      setTab('check-email');
+    });
+  };
+
+  const handleReset = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password !== password2) {
+      setError('Las contraseñas no coinciden.');
+      return;
+    }
+    run(async () => {
+      await updateUser({ password });
+      setPassword('');
+      setPassword2('');
+      onPendingActionDone();
+      onClose();
+      showToast('Contraseña actualizada. Ya iniciaste sesión.', 'success');
+    });
+  };
+
+  const handleInvite = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (pendingAction?.type !== 'invite') return;
+    if (password !== password2) {
+      setError('Las contraseñas no coinciden.');
+      return;
+    }
+    const token = pendingAction.token;
+    run(async () => {
+      await acceptInvite(token, password);
+      setPassword('');
+      setPassword2('');
+      onPendingActionDone();
+      onClose();
+      showToast('¡Invitación aceptada! Bienvenido(a) a EduNexus.', 'success');
+    });
+  };
+
+  const handleSaveProfile = (e: React.FormEvent) => {
+    e.preventDefault();
+    run(async () => {
+      await updateUser({ data: { full_name: name.trim(), uni: uni.trim() } });
+      showToast('Perfil actualizado', 'success');
+    });
+  };
+
+  const googleEnabled = !!settings?.providers?.google;
+  const signupDisabled = !!settings?.disableSignup;
+
+  const headerTitle: Record<AuthTab, string> = {
+    login: 'Inicia sesión en EduNexus',
+    register: 'Crea tu cuenta gratuita',
+    forgot: 'Recupera tu contraseña',
+    reset: 'Elige una nueva contraseña',
+    invite: 'Acepta tu invitación',
+    profile: 'Mi cuenta',
+    'check-email': 'Revisa tu correo',
+  };
+
+  const ErrorBox = () =>
+    error ? (
+      <div role="alert" className="flex items-start gap-2 p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300 text-xs font-semibold">
+        <AlertCircle className="w-4 h-4 shrink-0 mt-px" />
+        <span>{error}</span>
+      </div>
+    ) : null;
+
+  const SubmitBtn: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+    <button
+      type="submit"
+      disabled={busy}
+      className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-bold text-sm cursor-pointer flex items-center justify-center gap-2 transition"
+    >
+      {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+      {children}
+    </button>
+  );
+
+  const GoogleBlock = () =>
+    googleEnabled ? (
+      <>
+        <button
+          type="button"
+          onClick={() => {
+            setBusy(true);
+            oauthLogin('google');
+          }}
+          disabled={busy}
+          className="w-full py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 font-bold text-sm cursor-pointer flex items-center justify-center gap-2 transition"
+        >
+          <GoogleIcon /> Continuar con Google
+        </button>
+        <div className="flex items-center gap-3 text-[11px] text-slate-400 uppercase tracking-wider font-semibold">
+          <span className="flex-1 h-px bg-slate-200 dark:bg-slate-700" />o con tu correo
+          <span className="flex-1 h-px bg-slate-200 dark:bg-slate-700" />
+        </div>
+      </>
+    ) : null;
+
+  const closable = tab !== 'reset' && tab !== 'invite';
+
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-lg w-full p-6 border border-slate-200 dark:border-slate-800 shadow-2xl">
-        <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800 mb-4">
-          <div>
-            <span className="text-[11px] font-mono uppercase tracking-wider text-indigo-600 dark:text-indigo-400 font-bold">
-              Google Identity & Multi-Account Cloud
-            </span>
-            <h3 className="font-extrabold text-lg text-slate-900 dark:text-white">
-              Gestión de Cuentas Universitarias
-            </h3>
+    <div
+      className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && closable) onClose();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="auth-title"
+        className="bg-white dark:bg-slate-900 rounded-2xl max-w-md w-full p-6 border border-slate-200 dark:border-slate-800 shadow-2xl"
+      >
+        <div className="flex items-start justify-between mb-5">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-extrabold text-sm">
+              EN
+            </div>
+            <div>
+              <span className="text-[11px] font-mono uppercase tracking-wider text-indigo-600 dark:text-indigo-400 font-bold">
+                EduNexus Cloud
+              </span>
+              <h3 id="auth-title" className="font-extrabold text-lg text-slate-900 dark:text-white leading-tight">
+                {headerTitle[tab]}
+              </h3>
+            </div>
           </div>
-          <button onClick={onClose} className="p-1.5 text-slate-400 hover:text-slate-700 cursor-pointer">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        <div className="flex gap-2 mb-4 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
-          {[
-            { id: 'accounts', label: `Cuentas Guardadas (${savedAccounts.length})` },
-            { id: 'register', label: 'Crear Cuenta' },
-            ...(currentUser ? [{ id: 'profile', label: 'Mi Perfil Activo' }] : []),
-          ].map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id as typeof tab)}
-              className={`flex-1 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
-                tab === t.id
-                  ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs'
-                  : 'text-slate-600 dark:text-slate-400'
-              }`}
-            >
-              {t.label}
+          {closable && (
+            <button onClick={onClose} aria-label="Cerrar" className="p-1.5 text-slate-400 hover:text-slate-700 cursor-pointer">
+              <X className="w-5 h-5" />
             </button>
-          ))}
+          )}
         </div>
 
-        {tab === 'accounts' && (
-          <div className="space-y-2.5 max-h-80 overflow-y-auto">
-            {savedAccounts.map((acc) => {
-              const isCurrent = currentUser?.id === acc.id;
-              return (
-                <div
-                  key={acc.id}
-                  onClick={() => {
-                    onSelectAccount(acc);
-                    onClose();
-                  }}
-                  className={`p-3 rounded-xl border transition cursor-pointer flex items-center justify-between ${
-                    isCurrent
-                      ? 'bg-indigo-50/80 dark:bg-indigo-950/50 border-indigo-500'
-                      : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 hover:border-indigo-400'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-indigo-600 text-white font-bold text-xs flex items-center justify-center">
-                      {acc.name.slice(0, 2).toUpperCase()}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <p className="font-bold text-xs text-slate-900 dark:text-white">
-                          {acc.name}
-                        </p>
-                        {acc.isVerifiedTutor && (
-                          <span className="text-[10px] font-mono bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 rounded font-bold">
-                            SUNEDU ✓
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-slate-500">{acc.email}</p>
-                      <p className="text-[10px] text-indigo-600 dark:text-indigo-400 font-semibold">
-                        {acc.uni}
-                      </p>
-                    </div>
-                  </div>
-                  <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400">
-                    {isCurrent ? 'Activa' : 'Usar →'}
-                  </span>
-                </div>
-              );
-            })}
+        {(tab === 'login' || tab === 'register') && (
+          <div className="flex gap-1 mb-4 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
+            {[
+              { id: 'login' as const, label: 'Iniciar sesión' },
+              ...(signupDisabled ? [] : [{ id: 'register' as const, label: 'Crear cuenta' }]),
+            ].map((t) => (
+              <button
+                key={t.id}
+                onClick={() => switchTab(t.id)}
+                className={`flex-1 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  tab === t.id
+                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs'
+                    : 'text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
           </div>
         )}
 
-        {tab === 'register' && (
-          <form onSubmit={handleCreateAccount} className="space-y-3">
+        {tab === 'login' && (
+          <form onSubmit={handleLogin} className="space-y-3">
+            <GoogleBlock />
             <div>
-              <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1">
-                Nombre Completo
-              </label>
+              <label className={labelCls}>Correo electrónico</label>
               <input
-                type="text"
-                value={regName}
-                onChange={(e) => setRegName(e.target.value)}
-                placeholder="Ej. Camila Mendoza"
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs text-slate-900 dark:text-white"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+                placeholder="tu.correo@universidad.edu.pe"
+                required
+                autoFocus
+                className={inputCls}
               />
             </div>
             <div>
-              <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1">
-                Correo Google / Institucional
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-bold text-slate-600 dark:text-slate-400">Contraseña</label>
+                <button
+                  type="button"
+                  onClick={() => switchTab('forgot')}
+                  className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                >
+                  ¿Olvidaste tu contraseña?
+                </button>
+              </div>
+              <PasswordInput value={password} onChange={setPassword} autoComplete="current-password" />
+            </div>
+            <ErrorBox />
+            <SubmitBtn>
+              Iniciar sesión <ArrowRight className="w-4 h-4" />
+            </SubmitBtn>
+            {!signupDisabled && (
+              <p className="text-center text-xs text-slate-500">
+                ¿No tienes cuenta?{' '}
+                <button type="button" onClick={() => switchTab('register')} className="font-bold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer">
+                  Regístrate gratis
+                </button>
+              </p>
+            )}
+          </form>
+        )}
+
+        {tab === 'register' && (
+          <form onSubmit={handleRegister} className="space-y-3">
+            <GoogleBlock />
+            <div>
+              <label className={labelCls}>Nombre completo</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                autoComplete="name"
+                required
+                autoFocus
+                className={inputCls}
+              />
+            </div>
+            <div>
+              <label className={labelCls}>Correo electrónico</label>
               <input
                 type="email"
-                value={regEmail}
-                onChange={(e) => setRegEmail(e.target.value)}
-                placeholder="camila.mendoza@pucp.edu.pe"
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs text-slate-900 dark:text-white"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+                placeholder="tu.correo@universidad.edu.pe"
+                required
+                className={inputCls}
+              />
+            </div>
+            <div>
+              <label className={labelCls}>
+                Universidad / Carrera <span className="font-normal text-slate-400">(opcional)</span>
+              </label>
+              <input
+                type="text"
+                value={uni}
+                onChange={(e) => setUni(e.target.value)}
+                placeholder="Ej. PUCP · Ingeniería de Sistemas"
+                className={inputCls}
               />
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1">
-                  Carrera / Especialidad
-                </label>
-                <input
-                  type="text"
-                  value={regMajor}
-                  onChange={(e) => setRegMajor(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs text-slate-900 dark:text-white"
-                />
+                <label className={labelCls}>Contraseña</label>
+                <PasswordInput value={password} onChange={setPassword} autoComplete="new-password" />
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1">
-                  Rol en EduNexus
-                </label>
-                <select
-                  value={regRole}
-                  onChange={(e) =>
-                    setRegRole(e.target.value as 'Estudiante' | 'Asesor Verificado')
-                  }
-                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs text-slate-900 dark:text-white"
-                >
-                  <option value="Estudiante">Estudiante</option>
-                  <option value="Asesor Verificado">Asesor Académico (SUNEDU)</option>
-                </select>
+                <label className={labelCls}>Confirmar</label>
+                <PasswordInput value={password2} onChange={setPassword2} autoComplete="new-password" />
               </div>
             </div>
+            <p className="text-[11px] text-slate-400">Mínimo 8 caracteres. ¿Eres asesor? Podrás verificar tu credencial SUNEDU después de registrarte.</p>
+            <ErrorBox />
+            <SubmitBtn>Crear cuenta</SubmitBtn>
+          </form>
+        )}
 
-            {regRole === 'Asesor Verificado' && (
-              <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 space-y-2">
-                <p className="text-[11px] font-bold text-amber-800 dark:text-amber-300">
-                  Verificación Documental Obligatoria para Asesores:
-                </p>
-                <input
-                  type="text"
-                  value={regDocCode}
-                  onChange={(e) => setRegDocCode(e.target.value)}
-                  placeholder="Código de Registro SUNEDU / Colegio Profesional"
-                  className="w-full rounded-lg border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs text-slate-900 dark:text-white"
-                />
-                <label className="flex items-center gap-2 text-xs text-indigo-600 dark:text-indigo-400 font-bold cursor-pointer">
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>{regDocFile || 'Adjuntar Constancia PDF / Imagen'}</span>
-                  <input
-                    type="file"
-                    className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) setRegDocFile(f.name);
-                    }}
-                  />
-                </label>
-              </div>
-            )}
-
-            <button
-              type="submit"
-              className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs cursor-pointer"
-            >
-              Registrar e Iniciar Sesión
+        {tab === 'forgot' && (
+          <form onSubmit={handleForgot} className="space-y-3">
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              Ingresa el correo de tu cuenta y te enviaremos un enlace para crear una nueva contraseña.
+            </p>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+              placeholder="tu.correo@universidad.edu.pe"
+              required
+              autoFocus
+              className={inputCls}
+            />
+            <ErrorBox />
+            <SubmitBtn>Enviar enlace de recuperación</SubmitBtn>
+            <button type="button" onClick={() => switchTab('login')} className="w-full text-xs font-bold text-slate-500 hover:text-indigo-600 cursor-pointer">
+              ← Volver a iniciar sesión
             </button>
           </form>
         )}
 
+        {(tab === 'reset' || tab === 'invite') && (
+          <form onSubmit={tab === 'reset' ? handleReset : handleInvite} className="space-y-3">
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              {tab === 'reset'
+                ? 'Crea una nueva contraseña para tu cuenta.'
+                : 'Te invitaron a EduNexus. Elige una contraseña para activar tu cuenta.'}
+            </p>
+            <div>
+              <label className={labelCls}>Nueva contraseña</label>
+              <PasswordInput value={password} onChange={setPassword} autoComplete="new-password" />
+            </div>
+            <div>
+              <label className={labelCls}>Confirmar contraseña</label>
+              <PasswordInput value={password2} onChange={setPassword2} autoComplete="new-password" />
+            </div>
+            <ErrorBox />
+            <SubmitBtn>{tab === 'reset' ? 'Guardar contraseña' : 'Activar mi cuenta'}</SubmitBtn>
+          </form>
+        )}
+
+        {tab === 'check-email' && (
+          <div className="space-y-4 text-center">
+            <div className="w-14 h-14 mx-auto rounded-full bg-indigo-50 dark:bg-indigo-950/60 flex items-center justify-center">
+              <Mail className="w-7 h-7 text-indigo-600 dark:text-indigo-400" />
+            </div>
+            <p className="text-sm text-slate-600 dark:text-slate-300">{checkEmailMsg}</p>
+            <p className="text-[11px] text-slate-400">¿No lo ves? Revisa la carpeta de spam o promociones.</p>
+            <button
+              onClick={() => switchTab('login')}
+              className="w-full py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-bold text-sm cursor-pointer"
+            >
+              Volver a iniciar sesión
+            </button>
+          </div>
+        )}
+
         {tab === 'profile' && currentUser && (
-          <div className="space-y-4">
+          <form onSubmit={handleSaveProfile} className="space-y-4">
             <div className="flex items-center gap-4 p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60">
-              <div className="w-14 h-14 rounded-full bg-indigo-600 text-white font-extrabold text-lg flex items-center justify-center">
+              <div className="w-14 h-14 rounded-full bg-indigo-600 text-white font-extrabold text-lg flex items-center justify-center shrink-0">
                 {currentUser.name.slice(0, 2).toUpperCase()}
               </div>
-              <div>
-                <h4 className="font-bold text-base text-slate-900 dark:text-white">
-                  {currentUser.name}
-                </h4>
-                <p className="text-xs text-slate-500">{currentUser.email}</p>
-                <p className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 mt-0.5">
-                  {currentUser.uni}
-                </p>
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <h4 className="font-bold text-base text-slate-900 dark:text-white truncate">{currentUser.name}</h4>
+                  {currentUser.isVerifiedTutor && (
+                    <span className="text-[10px] font-mono bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 rounded font-bold">
+                      SUNEDU ✓
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500 truncate">{currentUser.email}</p>
+                <p className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 mt-0.5">{currentUser.role}</p>
               </div>
             </div>
-            <div className="flex justify-end gap-2">
+            <div>
+              <label className={labelCls}>Nombre</label>
+              <input type="text" value={name} onChange={(e) => setName(e.target.value)} required className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Universidad / Carrera</label>
+              <input
+                type="text"
+                value={uni}
+                onChange={(e) => setUni(e.target.value)}
+                placeholder="Ej. UNI · Ingeniería Civil"
+                className={inputCls}
+              />
+            </div>
+            <ErrorBox />
+            <div className="flex gap-2">
               <button
-                onClick={() => {
-                  onLogout();
+                type="button"
+                onClick={async () => {
+                  await onLogout();
                   onClose();
                 }}
-                className="px-4 py-2 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 font-bold text-xs cursor-pointer"
+                className="flex-1 py-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 font-bold text-sm cursor-pointer flex items-center justify-center gap-1.5"
               >
-                Cerrar Sesión
+                <LogOut className="w-4 h-4" /> Cerrar sesión
               </button>
+              <div className="flex-1">
+                <SubmitBtn>Guardar cambios</SubmitBtn>
+              </div>
             </div>
-          </div>
+          </form>
         )}
       </div>
     </div>

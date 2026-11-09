@@ -746,8 +746,6 @@ export const TutorPortalView: React.FC<TutorPortalViewProps> = ({
 
 interface RealtimeSocialViewProps {
   currentUser: UserAccount | null;
-  savedAccounts: UserAccount[];
-  onSwitchAccount: (acc: UserAccount) => void;
   onOpenAuthModal: () => void;
   socialPosts: SocialPost[];
   setSocialPosts: React.Dispatch<React.SetStateAction<SocialPost[]>>;
@@ -758,8 +756,6 @@ interface RealtimeSocialViewProps {
 
 export const RealtimeSocialView: React.FC<RealtimeSocialViewProps> = ({
   currentUser,
-  savedAccounts,
-  onSwitchAccount,
   onOpenAuthModal,
   socialPosts,
   setSocialPosts,
@@ -773,10 +769,10 @@ export const RealtimeSocialView: React.FC<RealtimeSocialViewProps> = ({
   const [dmInput, setDmInput] = useState<string>('');
   const [wsEvents, setWsEvents] = useState<string[]>([
     '[WS-SYNC] Canal BroadcastChannel("edunexus_realtime_v2") activo',
-    '[PRESENCE] Cuentas verificadas en línea',
   ]);
 
-  const activeUser: UserAccount = currentUser || savedAccounts[0];
+  // Handlers below only run when the view is rendered for a signed-in user
+  const activeUser = currentUser as UserAccount;
 
   useEffect(() => {
     if (typeof BroadcastChannel === 'undefined') return;
@@ -888,6 +884,40 @@ export const RealtimeSocialView: React.FC<RealtimeSocialViewProps> = ({
     setDmInput('');
   };
 
+  if (!currentUser) {
+    return (
+      <section className="max-w-xl mx-auto px-4 py-16 text-center">
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-8 space-y-4">
+          <div className="w-14 h-14 mx-auto rounded-full bg-indigo-50 dark:bg-indigo-950/60 flex items-center justify-center">
+            <Users className="w-7 h-7 text-indigo-600 dark:text-indigo-400" />
+          </div>
+          <h2 className="font-extrabold text-lg text-slate-900 dark:text-white">
+            Únete a la Comunidad EduNexus
+          </h2>
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            Inicia sesión o crea tu cuenta gratuita para publicar, comentar y enviar mensajes a otros estudiantes y asesores.
+          </p>
+          <button
+            onClick={onOpenAuthModal}
+            className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm cursor-pointer"
+          >
+            Iniciar sesión o registrarse
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  // People the user can message: real users seen in the feed or chat
+  const contacts = Array.from(
+    new Map(
+      [
+        ...socialPosts.map((p) => [p.author_email, p.author_name] as const),
+        ...directMessages.map((m) => [m.sender_email, m.sender_name] as const),
+      ].filter(([mail]) => mail && mail !== activeUser.email)
+    ).entries()
+  );
+
   const visibleMessages = directMessages.filter(
     (m) =>
       selectedDmTarget === 'ALL'
@@ -904,47 +934,26 @@ export const RealtimeSocialView: React.FC<RealtimeSocialViewProps> = ({
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-bold text-xs uppercase tracking-wider text-slate-500">
-                Cuentas Activas (Cambio 1-Clic)
+                Tu sesión
               </h3>
               <button
                 onClick={onOpenAuthModal}
                 className="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
               >
-                + Cuenta
+                Mi cuenta
               </button>
             </div>
-            <div className="space-y-2">
-              {savedAccounts.map((acc) => {
-                const isCurrent = acc.id === activeUser.id;
-                return (
-                  <div
-                    key={acc.id}
-                    onClick={() => onSwitchAccount(acc)}
-                    className={`p-2.5 rounded-xl border transition cursor-pointer flex items-center justify-between gap-2 ${
-                      isCurrent
-                        ? 'bg-indigo-50/90 dark:bg-indigo-950/60 border-indigo-500'
-                        : 'bg-slate-50/60 dark:bg-slate-800/40 border-slate-200/70 dark:border-slate-800 hover:border-indigo-300'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="w-8 h-8 rounded-full bg-indigo-600 text-white font-bold text-xs flex items-center justify-center shrink-0">
-                        {acc.name.slice(0, 2).toUpperCase()}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="font-bold text-xs text-slate-900 dark:text-white truncate">
-                          {acc.name}
-                        </p>
-                        <p className="text-[10px] text-slate-500 truncate">{acc.role}</p>
-                      </div>
-                    </div>
-                    {isCurrent && (
-                      <span className="text-[10px] font-mono font-bold text-indigo-600 dark:text-indigo-400">
-                        ACTIVO
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
+            <div className="p-2.5 rounded-xl border bg-indigo-50/90 dark:bg-indigo-950/60 border-indigo-500 flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-full bg-indigo-600 text-white font-bold text-xs flex items-center justify-center shrink-0">
+                {activeUser.name.slice(0, 2).toUpperCase()}
+              </div>
+              <div className="min-w-0">
+                <p className="font-bold text-xs text-slate-900 dark:text-white truncate">
+                  {activeUser.name}
+                </p>
+                <p className="text-[10px] text-slate-500 truncate">{activeUser.email}</p>
+                <p className="text-[10px] text-indigo-600 dark:text-indigo-400 font-semibold truncate">{activeUser.role}</p>
+              </div>
             </div>
           </div>
 
@@ -1094,13 +1103,11 @@ export const RealtimeSocialView: React.FC<RealtimeSocialViewProps> = ({
               className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-bold text-slate-800 dark:text-slate-200"
             >
               <option value="ALL">Canal General de la Comunidad (Todos)</option>
-              {savedAccounts
-                .filter((a) => a.email !== activeUser.email)
-                .map((a) => (
-                  <option key={a.id} value={a.email}>
-                    Chat 1-a-1 con {a.name}
-                  </option>
-                ))}
+              {contacts.map(([mail, name]) => (
+                <option key={mail} value={mail}>
+                  Chat 1-a-1 con {name}
+                </option>
+              ))}
             </select>
           </div>
 
