@@ -1,0 +1,6 @@
+{
+  "name": "EduNexus Cloud — Asesorías Online, Estudio & Apuntes",
+  "description": "Plataforma académica integral 100% online de asesorías personalizadas por hora, cursos por módulos con certificado, pizarra digital interactiva con IA, suite de estudio (Pomodoro, Flashcards, Simulacros) y repositorio de apuntes en la nube.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
